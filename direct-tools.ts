@@ -255,6 +255,7 @@ export function buildProxyDescription(
   desc += `  mcp({ describe: "tool_name" })        → Show tool details and parameters\n`;
   desc += `  mcp({ connect: "server-name" })       → Connect to a server and refresh metadata\n`;
   desc += `  mcp({ tool: "name", args: '{"key": "value"}' })    → Call a tool (args is JSON string)\n`;
+  desc += `  mcp({ tool: "name", includeTiming: true }) → Include wall-clock duration in the result\n`;
   desc += `  mcp({ action: "ui-messages" })        → Retrieve accumulated messages from completed UI sessions\n`;
   desc += `  mcp({ action: "auth-start", server: "name" })      → Start manual OAuth and get a browser URL\n`;
   desc += `  mcp({ action: "auth-complete", server: "name", args: '{"redirectUrl":"..."}' }) → Complete manual OAuth\n`;

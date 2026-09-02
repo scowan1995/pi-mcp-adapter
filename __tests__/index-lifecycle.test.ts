@@ -52,11 +52,14 @@ vi.mock("../metadata-cache.ts", () => ({
   loadMetadataCache: mocks.loadMetadataCache,
 }));
 
-vi.mock("../direct-tools.ts", () => ({
+vi.mock("../direct-tools-startup.ts", () => ({
   buildProxyDescription: mocks.buildProxyDescription,
-  createDirectToolExecutor: mocks.createDirectToolExecutor,
   getMissingConfiguredDirectToolServers: mocks.getMissingConfiguredDirectToolServers,
   resolveDirectTools: mocks.resolveDirectTools,
+}));
+
+vi.mock("../direct-tools.ts", () => ({
+  createDirectToolExecutor: mocks.createDirectToolExecutor,
 }));
 
 vi.mock("../commands.ts", () => ({
@@ -181,11 +184,9 @@ describe("mcpAdapter session lifecycle", () => {
 
     expect(api.registerTool).toHaveBeenCalledWith(expect.objectContaining({
       name: "demo_search",
-      renderResult: expect.any(Function),
     }));
     expect(api.registerTool).toHaveBeenCalledWith(expect.objectContaining({
       name: "mcp",
-      renderResult: expect.any(Function),
     }));
   });
 
@@ -211,7 +212,6 @@ describe("mcpAdapter session lifecycle", () => {
 
     expect(api.registerTool).toHaveBeenCalledWith(expect.objectContaining({
       name: "demo_search",
-      renderResult: expect.any(Function),
     }));
     expect(api.registerTool).not.toHaveBeenCalledWith(expect.objectContaining({ name: "mcp" }));
   });
@@ -249,6 +249,71 @@ describe("mcpAdapter session lifecycle", () => {
     );
   });
 
+  it("leaves proxy tool results untimed by default", async () => {
+    const state = createState();
+    mocks.initializeMcp.mockResolvedValue(state);
+    mocks.executeStatus.mockReturnValue({
+      content: [{ type: "text", text: "status ok" }],
+      details: { mode: "status" },
+    });
+
+    const { default: mcpAdapter } = await import("../index.ts");
+    const { api, handlers } = createPi();
+    mcpAdapter(api);
+
+    const sessionStart = handlers.get("session_start");
+    await sessionStart?.({}, {});
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const proxyTool = api.registerTool.mock.calls.find((call: any[]) => call[0].name === "mcp")?.[0];
+    const result = await proxyTool.execute("call-1", {});
+
+    expect(result.content[0].text).toBe("status ok");
+    expect(result.details).toEqual({ mode: "status" });
+  });
+
+  it("adds proxy tool timing only when requested", async () => {
+    const state = createState();
+    mocks.initializeMcp.mockResolvedValue(state);
+    mocks.executeCall.mockResolvedValue({
+      content: [{ type: "text", text: "tool ok" }],
+      details: { mode: "call", server: "demo", tool: "search" },
+    });
+
+    const { default: mcpAdapter } = await import("../index.ts");
+    const { api, handlers } = createPi();
+    mcpAdapter(api);
+
+    const sessionStart = handlers.get("session_start");
+    await sessionStart?.({}, {});
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const proxyTool = api.registerTool.mock.calls.find((call: any[]) => call[0].name === "mcp")?.[0];
+    const result = await proxyTool.execute("call-1", {
+      tool: "demo_search",
+      server: "demo",
+      args: '{"query":"hello"}',
+      includeTiming: true,
+    });
+
+    expect(mocks.executeCall).toHaveBeenCalledWith(state, "demo_search", { query: "hello" }, "demo", expect.any(Function));
+    expect(result.content[0].text).toContain("tool ok\n\nMCP timing: ");
+    expect(result.content[0].text).toContain(" ms (call)");
+    expect(result.details).toMatchObject({
+      mode: "call",
+      server: "demo",
+      tool: "search",
+      timing: {
+        elapsedMs: expect.any(Number),
+        startedAt: expect.any(String),
+        endedAt: expect.any(String),
+        mode: "call",
+      },
+    });
+  });
+
   it("starts a replacement init immediately and shuts down stale init results", async () => {
     const first = createDeferred<any>();
     const second = createDeferred<any>();
@@ -263,12 +328,13 @@ describe("mcpAdapter session lifecycle", () => {
     const sessionStart = handlers.get("session_start");
     expect(sessionStart).toBeTypeOf("function");
 
+    // session_start returns before init runs, so wait for the deferred work.
     await sessionStart?.({}, {});
-    expect(mocks.initializeMcp).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(mocks.initializeMcp).toHaveBeenCalledTimes(1));
     expect(mocks.shutdownOAuth).toHaveBeenCalledTimes(1);
 
     await sessionStart?.({}, {});
-    expect(mocks.initializeMcp).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(mocks.initializeMcp).toHaveBeenCalledTimes(2));
     expect(mocks.shutdownOAuth).toHaveBeenCalledTimes(2);
 
     const activeState = createState();
@@ -283,6 +349,8 @@ describe("mcpAdapter session lifecycle", () => {
     first.resolve(staleState);
     await Promise.resolve();
     await Promise.resolve();
+    await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
 
     expect(mocks.updateStatusBar).not.toHaveBeenCalledWith(staleState);
     expect(mocks.flushMetadataCache).toHaveBeenCalledWith(staleState);
@@ -301,8 +369,7 @@ describe("mcpAdapter session lifecycle", () => {
     const sessionShutdown = handlers.get("session_shutdown");
 
     await sessionStart?.({}, {});
-    await Promise.resolve();
-    await Promise.resolve();
+    await vi.waitFor(() => expect(mocks.initializeMcp).toHaveBeenCalled());
 
     mocks.shutdownOAuth.mockClear();
 
